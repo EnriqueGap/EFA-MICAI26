@@ -12,7 +12,7 @@ import pandas as pd
 from sklearn.base import BaseEstimator, clone
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import auc, average_precision_score, precision_recall_curve, recall_score
-from sklearn.model_selection import cross_validate
+from sklearn.model_selection import cross_validate, StratifiedKFold
 from sklearn.pipeline import Pipeline
 from sklearn.tree import DecisionTreeClassifier
 
@@ -139,6 +139,7 @@ def _build_xgboost(
             }
         )
 
+    final_params.setdefault("objective", "multi:softprob")
     final_params.setdefault("random_state", random_state)
     final_params.setdefault("n_jobs", -1)
     final_params.setdefault("eval_metric", "mlogloss")
@@ -308,7 +309,7 @@ def fit_model_pipeline(
         ]
     )
     model_pipeline.fit(X_train, y_train)
-    return model_pipeline, estimator
+    return model_pipeline, model_pipeline.named_steps["classifier"]
 
 
 def compute_class_aucpr_scores(model_pipeline: Pipeline, X_test: Any, y_test: Any) -> OrderedDict[Any, float]:
@@ -415,6 +416,13 @@ def create_objective(
     meta_reference_class: Any | None = None,
 ) -> Callable[[optuna.trial.Trial], float]:
     classes = np.unique(np.asarray(y_train))
+
+    cv_strategy = StratifiedKFold(
+        n_splits=cv,
+        shuffle=True,
+        random_state=random_state,
+    )
+
     scoring, class_metrics, active_meta_reference = _build_scoring_bundle(
         classes,
         meta_reference_class=meta_reference_class,
@@ -438,7 +446,7 @@ def create_objective(
             trial_pipeline,
             X_train,
             y_train,
-            cv=cv,
+            cv=cv_strategy,
             scoring=scoring,
         )
 
@@ -491,7 +499,12 @@ def optimize_model(
         meta_reference_class=meta_reference_class,
     )
 
-    study = optuna.create_study(direction=direction)
+    sampler = optuna.samplers.TPESampler(seed=random_state)
+    study = optuna.create_study(
+        direction=direction,
+        sampler=sampler,
+    )
+
     study.optimize(objective, n_trials=n_trials)
 
     best_pipeline, best_estimator = fit_model_pipeline(
@@ -520,6 +533,9 @@ def optimize_model(
 
 def resolve_contour_params(study: optuna.Study, *, model_name: str) -> list[str]:
     normalized_name = model_name.lower()
+    if normalized_name not in MODEL_REGISTRY:
+        supported = ", ".join(sorted(MODEL_REGISTRY))
+        raise ValueError(f"Unsupported model '{model_name}'. Supported models: {supported}.")
     preferred = MODEL_REGISTRY[normalized_name].contour_params
     best_param_names = list(study.best_params)
 
