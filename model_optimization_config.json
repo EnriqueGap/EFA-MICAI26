@@ -1,0 +1,245 @@
+{
+  "models": {
+    "decision_tree": {
+      "contour_params": ["max_depth", "min_samples_split"],
+      "search_space": {
+        "criterion": {
+          "type": "categorical",
+          "choices": ["gini", "entropy"]
+        },
+        "max_depth": {
+          "type": "int",
+          "low": 2,
+          "high": 32
+        },
+        "min_samples_split": {
+          "type": "int",
+          "low": 2,
+          "high": 20
+        }
+      }
+    },
+    "random_forest": {
+      "contour_params": ["max_depth", "min_samples_split"],
+      "default_params": {
+        "n_jobs": -1
+      },
+      "search_space": {
+        "n_estimators": {
+          "type": "int",
+          "low": 100,
+          "high": 600
+        },
+        "criterion": {
+          "type": "categorical",
+          "choices": ["gini", "entropy", "log_loss"]
+        },
+        "max_depth": {
+          "type": "int",
+          "low": 2,
+          "high": 32
+        },
+        "min_samples_split": {
+          "type": "int",
+          "low": 2,
+          "high": 20
+        },
+        "min_samples_leaf": {
+          "type": "int",
+          "low": 1,
+          "high": 10
+        },
+        "max_features": {
+          "type": "categorical",
+          "choices": ["sqrt", "log2", null]
+        }
+      }
+    },
+    "xgboost": {
+      "contour_params": ["learning_rate", "max_depth"],
+      "default_params": {
+        "objective": "multi:softprob",
+        "n_jobs": -1,
+        "eval_metric": "mlogloss"
+      },
+      "search_space": {
+        "n_estimators": {
+          "type": "int",
+          "low": 100,
+          "high": 600
+        },
+        "max_depth": {
+          "type": "int",
+          "low": 3,
+          "high": 12
+        },
+        "learning_rate": {
+          "type": "float",
+          "low": 0.01,
+          "high": 0.3,
+          "log": true
+        },
+        "subsample": {
+          "type": "float",
+          "low": 0.5,
+          "high": 1.0
+        },
+        "colsample_bytree": {
+          "type": "float",
+          "low": 0.5,
+          "high": 1.0
+        },
+        "min_child_weight": {
+          "type": "float",
+          "low": 1.0,
+          "high": 10.0
+        },
+        "reg_alpha": {
+          "type": "float",
+          "low": 1e-8,
+          "high": 10.0,
+          "log": true
+        },
+        "reg_lambda": {
+          "type": "float",
+          "low": 1e-8,
+          "high": 10.0,
+          "log": true
+        }
+      }
+    },
+    "lightgbm": {
+      "contour_params": ["learning_rate", "num_leaves"],
+      "default_params": {
+        "n_jobs": -1
+      },
+      "search_space": {
+        "n_estimators": {
+          "type": "int",
+          "low": 100,
+          "high": 600
+        },
+        "num_leaves": {
+          "type": "int",
+          "low": 15,
+          "high": 255
+        },
+        "learning_rate": {
+          "type": "float",
+          "low": 0.01,
+          "high": 0.3,
+          "log": true
+        },
+        "max_depth": {
+          "type": "int",
+          "low": 3,
+          "high": 16
+        },
+        "min_child_samples": {
+          "type": "int",
+          "low": 5,
+          "high": 50
+        },
+        "subsample": {
+          "type": "float",
+          "low": 0.5,
+          "high": 1.0
+        },
+        "colsample_bytree": {
+          "type": "float",
+          "low": 0.5,
+          "high": 1.0
+        },
+        "reg_alpha": {
+          "type": "float",
+          "low": 1e-8,
+          "high": 10.0,
+          "log": true
+        },
+        "reg_lambda": {
+          "type": "float",
+          "low": 1e-8,
+          "high": 10.0,
+          "log": true
+        }
+      }
+    },
+    "catboost": {
+      "contour_params": ["learning_rate", "depth"],
+      "default_params": {
+        "allow_writing_files": false,
+        "verbose": false
+      },
+      "search_space": {
+        "iterations": {
+          "type": "int",
+          "low": 100,
+          "high": 600
+        },
+        "depth": {
+          "type": "int",
+          "low": 4,
+          "high": 10
+        },
+        "learning_rate": {
+          "type": "float",
+          "low": 0.01,
+          "high": 0.3,
+          "log": true
+        },
+        "l2_leaf_reg": {
+          "type": "float",
+          "low": 1.0,
+          "high": 10.0
+        },
+        "random_strength": {
+          "type": "float",
+          "low": 1e-8,
+          "high": 10.0,
+          "log": true
+        },
+        "border_count": {
+          "type": "int",
+          "low": 32,
+          "high": 255
+        }
+      }
+    },
+    "balanced_random_forest": {
+      "contour_params": ["max_depth", "min_samples_split"],
+      "default_params": {
+        "n_jobs": -1
+      },
+      "search_space": {
+        "n_estimators": {
+          "type": "int",
+          "low": 100,
+          "high": 600
+        },
+        "max_depth": {
+          "type": "int",
+          "low": 2,
+          "high": 32
+        },
+        "min_samples_split": {
+          "type": "int",
+          "low": 2,
+          "high": 20
+        },
+        "min_samples_leaf": {
+          "type": "int",
+          "low": 1,
+          "high": 10
+        },
+        "max_features": {
+          "type": "categorical",
+          "choices": ["sqrt", "log2", null]
+        },
+        "replacement": {
+          "type": "categorical",
+          "choices": [true, false]
+        }
+      }
+    }
+  }
+}

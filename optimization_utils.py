@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import re
 from collections import OrderedDict
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 
 import numpy as np
@@ -17,13 +19,13 @@ from sklearn.pipeline import Pipeline
 from sklearn.tree import DecisionTreeClassifier
 
 
-EstimatorFactory = Callable[[optuna.trial.Trial | None, dict[str, Any] | None, int], BaseEstimator]
+EstimatorFactory = Callable[[dict[str, Any]], BaseEstimator]
+DEFAULT_MODEL_CONFIG_PATH = Path(__file__).with_name("model_optimization_config.json")
 
 
 @dataclass(frozen=True)
 class ModelSpec:
     factory: EstimatorFactory
-    contour_params: tuple[str, str] | None = None
 
 
 @dataclass
@@ -69,202 +71,179 @@ def _resolve_estimator_classes(estimator: BaseEstimator) -> np.ndarray:
     raise AttributeError("The fitted estimator does not expose classes_.")
 
 
-def _build_decision_tree(
-    trial: optuna.trial.Trial | None = None,
-    params: dict[str, Any] | None = None,
-    random_state: int = 42,
-) -> DecisionTreeClassifier:
-    final_params = dict(params or {})
+def load_model_optimization_config(config_path: str | Path | None = None) -> dict[str, Any]:
+    path = Path(config_path) if config_path is not None else DEFAULT_MODEL_CONFIG_PATH
 
-    if trial is not None:
-        final_params.update(
-            {
-                "criterion": trial.suggest_categorical("criterion", ["gini", "entropy"]),
-                "max_depth": trial.suggest_int("max_depth", 2, 32),
-                "min_samples_split": trial.suggest_int("min_samples_split", 2, 20),
-            }
+    with path.open("r", encoding="utf-8") as config_file:
+        config = json.load(config_file)
+
+    if not isinstance(config.get("models"), dict):
+        raise ValueError(f"Model optimization config '{path}' must contain a 'models' object.")
+
+    return config
+
+
+def _get_model_config(
+    model_name: str,
+    *,
+    model_config_path: str | Path | None = None,
+) -> dict[str, Any]:
+    config = load_model_optimization_config(model_config_path)
+    normalized_name = model_name.lower()
+    model_config = config["models"].get(normalized_name)
+
+    if not isinstance(model_config, dict):
+        raise ValueError(f"No optimization config found for model '{model_name}'.")
+
+    return model_config
+
+
+def _get_model_default_params(model_config: dict[str, Any], *, model_name: str) -> dict[str, Any]:
+    default_params = model_config.get("default_params", {})
+
+    if not isinstance(default_params, dict):
+        raise ValueError(f"Model '{model_name}' default_params must be an object.")
+
+    return dict(default_params)
+
+
+def _require_search_space_value(param_name: str, param_config: dict[str, Any], key: str) -> Any:
+    if key not in param_config:
+        raise ValueError(f"Search-space parameter '{param_name}' is missing '{key}'.")
+    return param_config[key]
+
+
+def _suggest_parameter(trial: optuna.trial.Trial, param_name: str, param_config: dict[str, Any]) -> Any:
+    param_type = _require_search_space_value(param_name, param_config, "type")
+
+    if param_type in {"categorical", "categorial"}:
+        choices = _require_search_space_value(param_name, param_config, "choices")
+        if not isinstance(choices, list) or not choices:
+            raise ValueError(f"Search-space parameter '{param_name}' choices must be a non-empty list.")
+        return trial.suggest_categorical(param_name, choices)
+
+    if param_type == "int":
+        suggest_kwargs = {
+            "step": param_config["step"],
+        } if "step" in param_config else {}
+
+        if "log" in param_config:
+            suggest_kwargs["log"] = bool(param_config["log"])
+
+        return trial.suggest_int(
+            param_name,
+            _require_search_space_value(param_name, param_config, "low"),
+            _require_search_space_value(param_name, param_config, "high"),
+            **suggest_kwargs,
         )
 
-    final_params.setdefault("random_state", random_state)
-    return DecisionTreeClassifier(**final_params)
+    if param_type == "float":
+        suggest_kwargs = {}
+        if "step" in param_config:
+            suggest_kwargs["step"] = param_config["step"]
+        if "log" in param_config:
+            suggest_kwargs["log"] = bool(param_config["log"])
+
+        return trial.suggest_float(
+            param_name,
+            _require_search_space_value(param_name, param_config, "low"),
+            _require_search_space_value(param_name, param_config, "high"),
+            **suggest_kwargs,
+        )
+
+    raise ValueError(
+        f"Unsupported search-space type '{param_type}' for parameter '{param_name}'. "
+        "Supported types: categorical, int, float."
+    )
+
+
+def _suggest_model_params(
+    trial: optuna.trial.Trial,
+    model_config: dict[str, Any],
+    *,
+    model_name: str,
+) -> dict[str, Any]:
+    search_space = model_config.get("search_space", {})
+
+    if not isinstance(search_space, dict):
+        raise ValueError(f"Model '{model_name}' search_space must be an object.")
+
+    suggested_params: dict[str, Any] = {}
+    for param_name, param_config in search_space.items():
+        if not isinstance(param_config, dict):
+            raise ValueError(f"Search-space parameter '{param_name}' must be an object.")
+        suggested_params[param_name] = _suggest_parameter(trial, param_name, param_config)
+
+    return suggested_params
+
+
+def _build_decision_tree(
+    params: dict[str, Any],
+) -> DecisionTreeClassifier:
+    return DecisionTreeClassifier(**params)
 
 
 def _build_random_forest(
-    trial: optuna.trial.Trial | None = None,
-    params: dict[str, Any] | None = None,
-    random_state: int = 42,
+    params: dict[str, Any],
 ) -> RandomForestClassifier:
-    final_params = dict(params or {})
-
-    if trial is not None:
-        final_params.update(
-            {
-                "n_estimators": trial.suggest_int("n_estimators", 100, 600),
-                "criterion": trial.suggest_categorical("criterion", ["gini", "entropy", "log_loss"]),
-                "max_depth": trial.suggest_int("max_depth", 2, 32),
-                "min_samples_split": trial.suggest_int("min_samples_split", 2, 20),
-                "min_samples_leaf": trial.suggest_int("min_samples_leaf", 1, 10),
-                "max_features": trial.suggest_categorical(
-                    "max_features",
-                    ["sqrt", "log2", None],
-                ),
-            }
-        )
-
-    final_params.setdefault("random_state", random_state)
-    final_params.setdefault("n_jobs", -1)
-    return RandomForestClassifier(**final_params)
+    return RandomForestClassifier(**params)
 
 
 def _build_xgboost(
-    trial: optuna.trial.Trial | None = None,
-    params: dict[str, Any] | None = None,
-    random_state: int = 42,
+    params: dict[str, Any],
 ) -> BaseEstimator:
     from xgboost import XGBClassifier
 
-    final_params = dict(params or {})
-
-    if trial is not None:
-        final_params.update(
-            {
-                "n_estimators": trial.suggest_int("n_estimators", 100, 600),
-                "max_depth": trial.suggest_int("max_depth", 3, 12),
-                "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
-                "subsample": trial.suggest_float("subsample", 0.5, 1.0),
-                "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
-                "min_child_weight": trial.suggest_float("min_child_weight", 1.0, 10.0),
-                "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 10.0, log=True),
-                "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 10.0, log=True),
-            }
-        )
-
-    final_params.setdefault("objective", "multi:softprob")
-    final_params.setdefault("random_state", random_state)
-    final_params.setdefault("n_jobs", -1)
-    final_params.setdefault("eval_metric", "mlogloss")
-    return XGBClassifier(**final_params)
+    return XGBClassifier(**params)
 
 
 def _build_lightgbm(
-    trial: optuna.trial.Trial | None = None,
-    params: dict[str, Any] | None = None,
-    random_state: int = 42,
+    params: dict[str, Any],
 ) -> BaseEstimator:
     from lightgbm import LGBMClassifier
 
-    final_params = dict(params or {})
-
-    if trial is not None:
-        final_params.update(
-            {
-                "n_estimators": trial.suggest_int("n_estimators", 100, 600),
-                "num_leaves": trial.suggest_int("num_leaves", 15, 255),
-                "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
-                "max_depth": trial.suggest_int("max_depth", 3, 16),
-                "min_child_samples": trial.suggest_int("min_child_samples", 5, 50),
-                "subsample": trial.suggest_float("subsample", 0.5, 1.0),
-                "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
-                "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 10.0, log=True),
-                "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 10.0, log=True),
-            }
-        )
-
-    final_params.setdefault("random_state", random_state)
-    final_params.setdefault("n_jobs", -1)
-    return LGBMClassifier(**final_params)
+    return LGBMClassifier(**params)
 
 
 def _build_catboost(
-    trial: optuna.trial.Trial | None = None,
-    params: dict[str, Any] | None = None,
-    random_state: int = 42,
+    params: dict[str, Any],
 ) -> BaseEstimator:
     from catboost import CatBoostClassifier
 
-    final_params = dict(params or {})
-
-    if trial is not None:
-        final_params.update(
-            {
-                "iterations": trial.suggest_int("iterations", 100, 600),
-                "depth": trial.suggest_int("depth", 4, 10),
-                "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
-                "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 1.0, 10.0),
-                "random_strength": trial.suggest_float("random_strength", 1e-8, 10.0, log=True),
-                "border_count": trial.suggest_int("border_count", 32, 255),
-            }
-        )
-
-    final_params.setdefault("random_state", random_state)
-    final_params.setdefault("allow_writing_files", False)
-    final_params.setdefault("verbose", False)
-    return CatBoostClassifier(**final_params)
+    return CatBoostClassifier(**params)
 
 
 def _build_balanced_random_forest(
-    trial: optuna.trial.Trial | None = None,
-    params: dict[str, Any] | None = None,
-    random_state: int = 42,
+    params: dict[str, Any],
 ) -> BaseEstimator:
     from imblearn.ensemble import BalancedRandomForestClassifier
 
-    final_params = dict(params or {})
-
-    if trial is not None:
-        final_params.update(
-            {
-                "n_estimators": trial.suggest_int("n_estimators", 100, 600),
-                "max_depth": trial.suggest_int("max_depth", 2, 32),
-                "min_samples_split": trial.suggest_int("min_samples_split", 2, 20),
-                "min_samples_leaf": trial.suggest_int("min_samples_leaf", 1, 10),
-                "max_features": trial.suggest_categorical(
-                    "max_features",
-                    ["sqrt", "log2", None],
-                ),
-                "replacement": trial.suggest_categorical("replacement", [True, False]),
-            }
-        )
-
-    final_params.setdefault("random_state", random_state)
-    final_params.setdefault("n_jobs", -1)
-    return BalancedRandomForestClassifier(**final_params)
+    return BalancedRandomForestClassifier(**params)
 
 
 MODEL_REGISTRY: dict[str, ModelSpec] = {
-    "decision_tree": ModelSpec(
-        factory=_build_decision_tree,
-        contour_params=("max_depth", "min_samples_split"),
-    ),
-    "random_forest": ModelSpec(
-        factory=_build_random_forest,
-        contour_params=("max_depth", "min_samples_split"),
-    ),
-    "xgboost": ModelSpec(
-        factory=_build_xgboost,
-        contour_params=("learning_rate", "max_depth"),
-    ),
-    "lightgbm": ModelSpec(
-        factory=_build_lightgbm,
-        contour_params=("learning_rate", "num_leaves"),
-    ),
-    "catboost": ModelSpec(
-        factory=_build_catboost,
-        contour_params=("learning_rate", "depth"),
-    ),
-    "balanced_random_forest": ModelSpec(
-        factory=_build_balanced_random_forest,
-        contour_params=("max_depth", "min_samples_split"),
-    ),
+    "decision_tree": ModelSpec(factory=_build_decision_tree),
+    "random_forest": ModelSpec(factory=_build_random_forest),
+    "xgboost": ModelSpec(factory=_build_xgboost),
+    "lightgbm": ModelSpec(factory=_build_lightgbm),
+    "catboost": ModelSpec(factory=_build_catboost),
+    "balanced_random_forest": ModelSpec(factory=_build_balanced_random_forest),
 }
 
 
-def get_available_models() -> list[str]:
+def get_available_models(
+    *,
+    model_config_path: str | Path | None = None,
+) -> list[str]:
     available_models: list[str] = []
 
     for model_name in MODEL_REGISTRY:
         try:
-            build_estimator(model_name=model_name, random_state=42)
+            build_estimator(
+                model_name=model_name,
+                random_state=42,
+                model_config_path=model_config_path,
+            )
         except ImportError:
             continue
         available_models.append(model_name)
@@ -278,13 +257,28 @@ def build_estimator(
     trial: optuna.trial.Trial | None = None,
     params: dict[str, Any] | None = None,
     random_state: int = 42,
+    model_config_path: str | Path | None = None,
 ) -> BaseEstimator:
     normalized_name = model_name.lower()
     if normalized_name not in MODEL_REGISTRY:
         supported = ", ".join(sorted(MODEL_REGISTRY))
         raise ValueError(f"Unsupported model '{model_name}'. Supported models: {supported}.")
 
-    return MODEL_REGISTRY[normalized_name].factory(trial, params, random_state)
+    model_config = _get_model_config(normalized_name, model_config_path=model_config_path)
+    final_params = _get_model_default_params(model_config, model_name=normalized_name)
+    final_params.update(params or {})
+
+    if trial is not None:
+        final_params.update(
+            _suggest_model_params(
+                trial,
+                model_config,
+                model_name=normalized_name,
+            )
+        )
+
+    final_params.setdefault("random_state", random_state)
+    return MODEL_REGISTRY[normalized_name].factory(final_params)
 
 
 def fit_model_pipeline(
@@ -295,11 +289,13 @@ def fit_model_pipeline(
     *,
     model_params: dict[str, Any] | None = None,
     random_state: int = 42,
+    model_config_path: str | Path | None = None,
 ) -> tuple[Pipeline, BaseEstimator]:
     estimator = build_estimator(
         model_name=model_name,
         params=model_params,
         random_state=random_state,
+        model_config_path=model_config_path,
     )
 
     model_pipeline = Pipeline(
@@ -414,6 +410,7 @@ def create_objective(
     cv: int = 5,
     random_state: int = 42,
     meta_reference_class: Any | None = None,
+    model_config_path: str | Path | None = None,
 ) -> Callable[[optuna.trial.Trial], float]:
     classes = np.unique(np.asarray(y_train))
 
@@ -433,6 +430,7 @@ def create_objective(
             model_name=model_name,
             trial=trial,
             random_state=random_state,
+            model_config_path=model_config_path,
         )
 
         trial_pipeline = Pipeline(
@@ -488,6 +486,7 @@ def optimize_model(
     random_state: int = 42,
     direction: str = "maximize",
     meta_reference_class: Any | None = None,
+    model_config_path: str | Path | None = None,
 ) -> OptimizationArtifacts:
     objective = create_objective(
         model_name=model_name,
@@ -497,6 +496,7 @@ def optimize_model(
         cv=cv,
         random_state=random_state,
         meta_reference_class=meta_reference_class,
+        model_config_path=model_config_path,
     )
 
     sampler = optuna.samplers.TPESampler(seed=random_state)
@@ -514,10 +514,15 @@ def optimize_model(
         y_train=y_train,
         model_params=study.best_params,
         random_state=random_state,
+        model_config_path=model_config_path,
     )
 
     classes = np.unique(np.asarray(y_train))
-    contour_params = resolve_contour_params(study, model_name=model_name)
+    contour_params = resolve_contour_params(
+        study,
+        model_name=model_name,
+        model_config_path=model_config_path,
+    )
     active_meta_reference = classes[0] if meta_reference_class is None else meta_reference_class
 
     return OptimizationArtifacts(
@@ -531,16 +536,26 @@ def optimize_model(
     )
 
 
-def resolve_contour_params(study: optuna.Study, *, model_name: str) -> list[str]:
+def resolve_contour_params(
+    study: optuna.Study,
+    *,
+    model_name: str,
+    model_config_path: str | Path | None = None,
+) -> list[str]:
     normalized_name = model_name.lower()
     if normalized_name not in MODEL_REGISTRY:
         supported = ", ".join(sorted(MODEL_REGISTRY))
         raise ValueError(f"Unsupported model '{model_name}'. Supported models: {supported}.")
-    preferred = MODEL_REGISTRY[normalized_name].contour_params
+
+    model_config = _get_model_config(normalized_name, model_config_path=model_config_path)
+    preferred = model_config.get("contour_params", [])
+    if not isinstance(preferred, list):
+        raise ValueError(f"Model '{model_name}' contour_params must be a list.")
+
     best_param_names = list(study.best_params)
 
     if preferred and all(parameter in study.best_params for parameter in preferred):
-        return list(preferred)
+        return preferred
 
     return best_param_names[:2]
 
