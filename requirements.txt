@@ -1,0 +1,11 @@
+numpy
+pandas
+scikit-learn
+optuna
+plotly
+matplotlib
+imbalanced-learn
+xgboost
+lightgbm
+catboost
+ipykernel
