@@ -95,7 +95,7 @@ def build_preprocessor(
         transformers.append(
             (
                 "multi_cat",
-                OneHotEncoder(handle_unknown="ignore"),
+                OneHotEncoder(handle_unknown="ignore", sparse_output=False),
                 feature_groups.multiclass_categorical,
             )
         )
@@ -103,7 +103,7 @@ def build_preprocessor(
     if not transformers:
         raise ValueError("No features were found to build the preprocessing pipeline.")
 
-    return ColumnTransformer(transformers=transformers)
+    return ColumnTransformer(transformers=transformers).set_output(transform="pandas")
 
 
 def prepare_dataset(
